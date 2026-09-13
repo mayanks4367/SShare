@@ -1,0 +1,19 @@
+[package]
+name = "swarmshare-net"
+version = "0.1.0"
+edition = "2021"
+description = "libp2p networking: Kademlia DHT + Gossipsub + mDNS + chunk request-response"
+
+[dependencies]
+swarmshare-core = { path = "../swarmshare-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+libp2p = { version = "0.56", features = [
+    "tcp", "quic", "dns", "kad", "gossipsub",
+    "request-response", "mdns", "noise", "yamux", "identify",
+    "tokio", "macros", "cbor",
+] }
