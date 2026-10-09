@@ -10,9 +10,9 @@ reputation, and tit-for-tat fairness.
 ```
 ┌──────────┐  DHT provide/get   ┌──────────┐
 │  Peer A  │◄──────────────────►│  Peer B  │
-│ (seeder) │  Gossipsub announce │ (leecher)│
-└────┬─────┘  mDNS (LAN)         └────┬─────┘
-     │  ┌──────────────────────────┐  │
+│ (seeder) │  Gossipsub announce│ (leecher)│
+└────┬─────┘  mDNS (LAN)        └────┬─────┘
+     │ ┌──────────────────────────┐  │
      └──►  chunk 0,2,4… (parallel)◄──┘
           verify BLAKE3 → assemble
 ```
