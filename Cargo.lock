@@ -3121,6 +3121,7 @@ dependencies = [
  "serde_json",
  "swarmshare-core",
  "swarmshare-net",
+ "swarmshare-protocol",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3153,6 +3154,14 @@ dependencies = [
  "swarmshare-core",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "swarmshare-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

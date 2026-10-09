@@ -15,6 +15,16 @@ pub fn hash_bytes(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
 }
 
+/// SHA-256 hash of arbitrary bytes, hex encoded.
+///
+/// Canonical hashing stays BLAKE3 (`hash_bytes`). SHA-256 exists as the
+/// bridge format for browser clients (WebCrypto) and the HTTP gateway, so
+/// web and native sides can verify the same bytes without WASM BLAKE3.
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(data))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chunk {
     /// Index within the file (0-based).
@@ -159,5 +169,15 @@ mod tests {
         let a = c.chunk_bytes(b"same data here");
         let b = c.chunk_bytes(b"same data here");
         assert_eq!(Chunker::file_id(&a), Chunker::file_id(&b));
+    }
+
+    #[test]
+    fn sha256_bridge_vector() {
+        // Well-known SHA-256("abc"); browsers must reproduce this via WebCrypto.
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(sha256_hex(b"abc").len(), 64);
     }
 }

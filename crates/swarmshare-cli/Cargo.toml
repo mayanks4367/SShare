@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 swarmshare-core = { path = "../swarmshare-core" }
 swarmshare-net = { path = "../swarmshare-net" }
+swarmshare-protocol = { path = "../swarmshare-protocol" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

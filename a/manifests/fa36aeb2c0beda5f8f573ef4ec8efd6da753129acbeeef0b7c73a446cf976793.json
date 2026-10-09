@@ -1,0 +1,18 @@
+{
+  "file_id": "fa36aeb2c0beda5f8f573ef4ec8efd6da753129acbeeef0b7c73a446cf976793",
+  "file_name": "README.md",
+  "file_size": 6395,
+  "chunk_size": 262144,
+  "chunk_hashes": [
+    "19231e9962720e6337612301f3c367bfccbbc08385d6ccf265cf381e3f215ff9"
+  ],
+  "parity_hashes": [],
+  "parity_group": 0,
+  "keywords": [
+    "readme"
+  ],
+  "compressed": false,
+  "encrypted": false,
+  "created_at": 1789826690530,
+  "description": ""
+}

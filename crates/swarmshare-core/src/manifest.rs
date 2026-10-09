@@ -28,6 +28,17 @@ pub struct FileManifest {
     /// Human note.
     #[serde(default)]
     pub description: String,
+    /// Whole-file SHA-256 over the *raw* bytes (browser-verifiable bridge).
+    /// `None` for manifests created before web integration.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// Per-chunk SHA-256 over *stored* bytes, index-aligned with `chunk_hashes`.
+    /// Empty for pre-web manifests.
+    #[serde(default)]
+    pub chunk_sha256: Vec<String>,
+    /// MIME type for browser downloads (e.g. "image/png"). Empty if unknown.
+    #[serde(default)]
+    pub mime: String,
 }
 
 impl FileManifest {
@@ -56,6 +67,9 @@ impl FileManifest {
             encrypted: false,
             created_at: now_millis(),
             description: String::new(),
+            sha256: None,
+            chunk_sha256: Vec::new(),
+            mime: String::new(),
         }
     }
 
@@ -85,6 +99,16 @@ impl FileManifest {
         self.chunk_hashes
             .get(index)
             .map(|h| &crate::chunk::hash_bytes(data) == h)
+            .unwrap_or(false)
+    }
+
+    /// Verify stored chunk bytes against the SHA-256 bridge hash.
+    /// Returns false when the manifest predates web integration or the
+    /// index is out of range.
+    pub fn verify_chunk_sha256(&self, index: usize, data: &[u8]) -> bool {
+        self.chunk_sha256
+            .get(index)
+            .map(|h| &crate::chunk::sha256_hex(data) == h)
             .unwrap_or(false)
     }
 

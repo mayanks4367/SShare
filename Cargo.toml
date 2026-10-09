@@ -2,6 +2,7 @@
 members = [
     "crates/swarmshare-core",
     "crates/swarmshare-net",
+    "crates/swarmshare-protocol",
     "crates/swarmshare-cli",
 ]
 resolver = "2"

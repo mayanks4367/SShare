@@ -1,0 +1,23 @@
+{
+  "name": "ssshare-signaling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dedicated WebSocket signaling service for SShare WebRTC (rooms + SDP/ICE relay, never stores or proxies files).",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

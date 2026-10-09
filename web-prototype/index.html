@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SShare WebRTC Prototype</title>
+    <link rel="stylesheet" href="/src/app/styles.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>🌀 SShare WebRTC prototype <small>(no server, copy-paste signaling)</small></h1>
+      <p class="hint">
+        Open this page on <b>two browsers/devices</b>. Left = sender (User A), right = receiver (User B).
+        Paste the codes between them. Data flows peer-to-peer over WebRTC DataChannel.
+      </p>
+
+      <div class="grid">
+        <section class="card" id="sender-card">
+          <h2>User A — Send</h2>
+          <div class="row">
+            <button id="btn-create">1. Create session</button>
+            <code id="session-id">—</code>
+          </div>
+          <label>File <input type="file" id="file-input" /></label>
+          <label>Chunk size (KB)
+            <input type="number" id="chunk-kb" value="64" min="4" max="256" step="4" />
+          </label>
+          <div id="file-meta" class="mono">no file selected</div>
+          <label>Offer code (copy to User B)
+            <textarea id="offer-out" readonly rows="4" placeholder="click Create session first"></textarea>
+          </label>
+          <div class="row">
+            <button id="btn-copy-offer">Copy offer</button>
+          </div>
+          <label>Answer code (paste from User B)
+            <textarea id="answer-in" rows="4" placeholder="paste answer here"></textarea>
+          </label>
+          <div class="row">
+            <button id="btn-accept-answer">2. Connect</button>
+            <button id="btn-send" disabled>3. Send file</button>
+            <button id="btn-cancel-send" disabled>Cancel</button>
+          </div>
+          <div class="status">Connection: <b id="sender-conn">new</b> · Transfer: <b id="sender-xfer">idle</b></div>
+          <div class="bar"><div id="sender-bar"></div></div>
+          <div id="sender-stats" class="mono">—</div>
+          <div id="sender-err" class="err"></div>
+        </section>
+
+        <section class="card" id="receiver-card">
+          <h2>User B — Receive</h2>
+          <label>Offer code (paste from User A)
+            <textarea id="offer-in" rows="4" placeholder="paste offer here"></textarea>
+          </label>
+          <div class="row">
+            <button id="btn-join">1. Join + make answer</button>
+          </div>
+          <label>Answer code (copy to User A)
+            <textarea id="answer-out" readonly rows="4"></textarea>
+          </label>
+          <div class="row">
+            <button id="btn-copy-answer">Copy answer</button>
+            <button id="btn-cancel-recv" disabled>Cancel</button>
+          </div>
+          <div class="status">Connection: <b id="recv-conn">new</b> · Transfer: <b id="recv-xfer">idle</b></div>
+          <div class="bar"><div id="recv-bar"></div></div>
+          <div id="recv-stats" class="mono">waiting for file…</div>
+          <div class="row"><a id="download-link" style="display:none">⬇ Download received file</a></div>
+          <div id="recv-err" class="err"></div>
+        </section>
+      </div>
+
+      <details>
+        <summary>How to use (30s)</summary>
+        <ol>
+          <li>A clicks <b>Create session</b>, selects a file, copies <b>offer</b> to B.</li>
+          <li>B pastes offer, clicks <b>Join</b>, copies <b>answer</b> back to A.</li>
+          <li>A pastes answer, clicks <b>Connect</b>, then <b>Send file</b>.</li>
+          <li>B watches progress; on complete the download link appears (checksum verified).</li>
+        </ol>
+      </details>
+    </main>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>

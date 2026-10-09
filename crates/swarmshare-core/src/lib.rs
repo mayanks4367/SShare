@@ -8,7 +8,7 @@ pub mod parity;
 pub mod picker;
 pub mod store;
 
-pub use chunk::{Chunk, Chunker, CHUNK_SIZE, hash_bytes};
+pub use chunk::{Chunk, Chunker, CHUNK_SIZE, hash_bytes, sha256_hex};
 pub use manifest::FileManifest;
 pub use picker::{ChokeManager, PeerReputation, RarestFirstPicker};
 pub use store::BlockStore;

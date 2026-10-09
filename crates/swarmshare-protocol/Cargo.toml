@@ -1,0 +1,12 @@
+[package]
+name = "swarmshare-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared SShare protocol types: signaling messages, web transfer manifest, transfer state model"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

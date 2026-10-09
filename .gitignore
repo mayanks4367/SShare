@@ -3,3 +3,6 @@ swarm-data/
 *.log
 *.bin
 .DS_Store
+node_modules/
+web-prototype/dist/
+signaling/dist/
