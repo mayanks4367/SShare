@@ -87,12 +87,35 @@ export function validateMetadata(m: TransferMetadata): void {
 
 const ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-export function generateSessionId(): string {
-  let s = "";
+export function generateSessionId(): string {  let s = "";
   const buf = new Uint8Array(6);
   const g = globalThis as unknown as { crypto?: Crypto };
   if (g.crypto?.getRandomValues) g.crypto.getRandomValues(buf);
   else for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
   for (const b of buf) s += ID_ALPHABET[b % ID_ALPHABET.length];
   return `SS-${s}`;
+}
+
+/**
+ * Sanitize a receiver `have` hint: integers in [0, total), deduplicated,
+ * sorted. Malformed entries are dropped (never trust the peer blindly).
+ */
+export function sanitizeHave(have: unknown, totalChunks: number): number[] {
+  if (!Array.isArray(have)) return [];
+  const out = new Set<number>();
+  for (const v of have) {
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v < totalChunks) {
+      out.add(v);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/** Indices still needing transfer, in ascending order. */
+export function computeRemaining(totalChunks: number, have: ReadonlySet<number>): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    if (!have.has(i)) out.push(i);
+  }
+  return out;
 }

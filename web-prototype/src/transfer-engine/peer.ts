@@ -11,10 +11,12 @@
  */
 import {
   PROTOCOL_CHANNEL,
+  computeRemaining,
   decodeChunk,
   decodeControl,
   encodeChunk,
   encodeControl,
+  sanitizeHave,
 } from "./protocol.js";
 import { reassembleByIndex } from "./chunker.js";
 import { sha256Hex } from "./checksum.js";
@@ -34,6 +36,34 @@ export interface PeerEvents {
   onComplete?: (file: Uint8Array, meta: TransferMetadata) => void;
   onError?: (e: Error) => void;
   onCancelled?: (reason?: string) => void;
+  onRoute?: (kind: RouteKind, rttMs?: number) => void;
+}
+
+/** Tunables; everything has a production default. */
+export interface PeerOptions {
+  iceServers?: RTCIceServer[];
+  /** Give up establishing the connection after this long (ms, 0 = off). */
+  connectionTimeoutMs?: number;
+  /** DataChannel bufferedAmount pause threshold (bytes). */
+  backpressureBytes?: number;
+  /** How long a sender waits for a receiver `have` resume hint (ms). */
+  resumeWaitMs?: number;
+}
+
+export type RouteKind = "direct" | "relay" | "unknown";
+
+/** Classify the selected pair without exposing addresses (pure, tested). */
+export function classifyRoute(pair: { localType?: string; remoteType?: string } | null): RouteKind {
+  if (!pair) return "unknown";
+  const types = [pair.localType ?? "", pair.remoteType ?? ""].map((s) => s.toLowerCase());
+  if (types.some((t) => t === "relay")) return "relay";
+  if (types.some((t) => t === "host" || t === "srflx" || t === "prflx")) return "direct";
+  return "unknown";
+}
+
+export interface RouteInfo {
+  kind: RouteKind;
+  rttMs?: number;
 }
 
 export const BACKPRESSURE_BYTES = 1 * 1024 * 1024; // pause sends above 1 MiB buffered
@@ -62,9 +92,12 @@ export function progressFor(
 /** Wait until DataChannel bufferedAmount drains below threshold. */
 async function drainBackpressure(
   dc: RTCDataChannel,
+  threshold: number,
   cancelled: () => boolean,
+  onStall?: () => void,
 ): Promise<void> {
-  if (dc.bufferedAmount <= BACKPRESSURE_BYTES) return;
+  if (dc.bufferedAmount <= threshold) return;
+  onStall?.();
   await new Promise<void>((resolve, reject) => {
     const t0 = Date.now();
     const timer = window.setInterval(() => {
@@ -74,7 +107,7 @@ async function drainBackpressure(
         reject(new Error("cancelled"));
         return;
       }
-      if (dc.bufferedAmount <= BACKPRESSURE_BYTES || Date.now() - t0 > 30_000) {
+      if (dc.bufferedAmount <= threshold || Date.now() - t0 > 30_000) {
         window.clearInterval(timer);
         dc.onbufferedamountlow = null;
         resolve();
@@ -93,7 +126,15 @@ export class TransferPeer {
   private dc: RTCDataChannel | null = null;
   private events: PeerEvents;
   private role: "sender" | "receiver";
+  private opts: Required<PeerOptions>;
   private cancelFlag = false;
+  private connTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastRoute: RouteKind | null = null;
+  private haveHints = new Map<string, Set<number>>();
+  private haveWaiters = new Map<string, () => void>();
+
+  /** How many times the sender hit backpressure (diagnostics). */
+  backpressureStalls = 0;
 
   // sender state
   private sendMeta: TransferMetadata | null = null;
@@ -107,16 +148,22 @@ export class TransferPeer {
   private recvStartedAt = 0;
   private lastProgressEmit = 0;
 
-  constructor(role: "sender" | "receiver", events: PeerEvents = {}) {
+  constructor(role: "sender" | "receiver", events: PeerEvents = {}, opts: PeerOptions = {}) {
     this.role = role;
     this.events = events;
-    this.pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
+    this.opts = {
+      iceServers: opts.iceServers ?? [{ urls: "stun:stun.l.google.com:19302" }],
+      connectionTimeoutMs: opts.connectionTimeoutMs ?? 0,
+      backpressureBytes: opts.backpressureBytes ?? BACKPRESSURE_BYTES,
+      resumeWaitMs: opts.resumeWaitMs ?? 1500,
+    };
+    this.pc = new RTCPeerConnection({ iceServers: this.opts.iceServers });
     this.pc.onconnectionstatechange = () => {
-      this.events.onConnection?.(rtcStatus(this.pc));
+      const s = rtcStatus(this.pc);
+      this.events.onConnection?.(s);
+      if (s === "connected") this.clearConnectionTimeout();
       if (this.pc.connectionState === "failed") {
-        this.events.onError?.(new Error("peer connection failed (NAT? try same network)"));
+        this.events.onError?.(new Error("peer connection failed (NAT? relay may be needed)"));
       }
     };
     if (role === "sender") {
@@ -138,6 +185,78 @@ export class TransferPeer {
 
   channelOpen(): boolean {
     return !!this.dc && this.dc.readyState === "open";
+  }
+
+  /** Watchdog: report a timeout if `connected` is never reached. */
+  armConnectionTimeout(ms?: number): void {
+    this.clearConnectionTimeout();
+    const budget = ms ?? this.opts.connectionTimeoutMs;
+    if (!budget || budget <= 0) return;
+    this.connTimer = setTimeout(() => {
+      this.connTimer = null;
+      if (this.pc.connectionState !== "connected") {
+        this.events.onError?.(
+          new Error(
+            `connection timed out after ${Math.round(budget / 1000)}s (no direct or relay path established)`,
+          ),
+        );
+      }
+    }, budget);
+  }
+
+  clearConnectionTimeout(): void {
+    if (this.connTimer) {
+      clearTimeout(this.connTimer as unknown as number);
+      this.connTimer = null;
+    }
+  }
+
+  /** Selected ICE pair kind + RTT only — never addresses. */
+  async getRouteInfo(): Promise<RouteInfo> {
+    try {
+      const stats = await this.pc.getStats();
+      const found: Array<{ localType?: string; remoteType?: string; rtt?: number }> = [];
+      const remotes = new Map<string, string>();
+      const locals = new Map<string, string>();
+      stats.forEach((r) => {
+        const rec = r as unknown as Record<string, unknown>;
+        if (rec["type"] === "remote-candidate" && typeof rec["id"] === "string") {
+          remotes.set(rec["id"] as string, String(rec["candidateType"] ?? ""));
+        } else if (rec["type"] === "local-candidate" && typeof rec["id"] === "string") {
+          locals.set(rec["id"] as string, String(rec["candidateType"] ?? ""));
+        }
+      });
+      stats.forEach((r) => {
+        const rec = r as unknown as Record<string, unknown>;
+        const isPair = rec["type"] === "candidate-pair" || rec["type"] === "candidatepair";
+        if (!isPair || found.length > 0) return;
+        const sel = rec["selected"] === true || rec["nominated"] === true;
+        const usable = sel || (rec["writable"] === true && rec["state"] === "succeeded");
+        if (!usable) return;
+        found.push({
+          localType: locals.get(String(rec["localCandidateId"] ?? "")),
+          remoteType: remotes.get(String(rec["remoteCandidateId"] ?? "")),
+          rtt:
+            typeof rec["currentRoundTripTime"] === "number"
+              ? (rec["currentRoundTripTime"] as number) * 1000
+              : undefined,
+        });
+      });
+      const selected = found[0];
+      if (!selected) return { kind: "unknown" };
+      const kind = classifyRoute(selected);
+      const info: RouteInfo = { kind };
+      if (typeof selected.rtt === "number" && Number.isFinite(selected.rtt)) {
+        info.rttMs = Math.round(selected.rtt);
+      }
+      if (kind !== this.lastRoute) {
+        this.lastRoute = kind;
+        this.events.onRoute?.(kind, info.rttMs);
+      }
+      return info;
+    } catch {
+      return { kind: "unknown" };
+    }
   }
 
   private attachChannel(dc: RTCDataChannel): void {
@@ -170,6 +289,16 @@ export class TransferPeer {
 
   private async handleControl(msg: ControlMessage): Promise<void> {
     if (msg.t === "meta" && this.role === "receiver") {
+      if (this.recvMeta && this.recvMeta.transferId === msg.meta.transferId && this.recvBytes > 0) {
+        const have: number[] = [];
+        for (let i = 0; i < this.recvChunks.length; i++) {
+          if (this.recvChunks[i]) have.push(i);
+        }
+        this.dc?.send(encodeControl({ t: "have", transferId: msg.meta.transferId, have }));
+        this.events.onTransfer?.("receiving");
+        this.emitProgressRecv(true);
+        return;
+      }
       this.recvMeta = msg.meta;
       this.recvChunks = new Array(msg.meta.totalChunks).fill(undefined);
       this.recvBytes = 0;
@@ -177,6 +306,15 @@ export class TransferPeer {
       this.events.onMetadata?.(msg.meta);
       this.events.onTransfer?.("receiving");
       this.emitProgressRecv(true);
+    } else if (msg.t === "have" && this.role === "sender") {
+      const set = this.haveHints.get(msg.transferId) ?? new Set<number>();
+      for (const i of sanitizeHave(msg.have, 1_000_000)) set.add(i);
+      this.haveHints.set(msg.transferId, set);
+      const wake = this.haveWaiters.get(msg.transferId);
+      if (wake) {
+        this.haveWaiters.delete(msg.transferId);
+        wake();
+      }
     } else if (msg.t === "done" && this.role === "receiver") {
       await this.finishReceive();
     } else if (msg.t === "cancel") {
@@ -231,40 +369,71 @@ export class TransferPeer {
   /**
    * Sender: stream a Blob/File chunk-by-chunk over the open channel.
    * Reads sequentially (low RAM), respects backpressure, emits progress.
+   * Briefly waits for a receiver `have` hint after `meta` so interrupted
+   * transfers resume instead of restarting.
    */
   async sendFile(meta: TransferMetadata, blob: Blob): Promise<void> {
     if (this.role !== "sender") throw new Error("only sender can sendFile");
     if (!this.channelOpen()) throw new Error("data channel not open yet");
     this.cancelFlag = false;
     this.sendMeta = meta;
-    this.sentBytes = 0;
     this.sendStartedAt = nowMs();
     this.events.onTransfer?.("sending");
 
     this.dc!.send(encodeControl({ t: "meta", meta }));
+    await this.awaitHaveHint(meta.transferId);
+
+    const skip = this.haveHints.get(meta.transferId) ?? new Set<number>();
+    const order = computeRemaining(meta.totalChunks, skip);
+    this.sentBytes = meta.fileSize - orderByteLength(meta, order);
+    this.events.onProgress?.(progressFor(this.sentBytes, meta.fileSize, this.sendStartedAt));
+
     let lastEmit = 0;
-    for (let index = 0; index < meta.totalChunks; index++) {
+    for (const index of order) {
       if (this.cancelFlag) {
         this.dc!.send(encodeControl({ t: "cancel", transferId: meta.transferId, reason: "sender cancelled" }));
         this.events.onTransfer?.("cancelled");
         this.events.onCancelled?.("sender cancelled");
         return;
       }
+      if (!this.channelOpen()) {
+        throw new Error("data channel closed mid-transfer (peer disconnected?)");
+      }
       const start = index * meta.chunkSize;
       const slice = blob.slice(start, start + meta.chunkSize);
       const payload = new Uint8Array(await slice.arrayBuffer());
-      await drainBackpressure(this.dc!, () => this.cancelFlag);
+      await drainBackpressure(this.dc!, this.opts.backpressureBytes, () => this.cancelFlag, () => {
+        this.backpressureStalls += 1;
+      });
       this.dc!.send(encodeChunk(index, payload));
       this.sentBytes += payload.length;
       const t = Date.now();
-      if (t - lastEmit >= PROGRESS_THROTTLE_MS || index === meta.totalChunks - 1) {
+      if (t - lastEmit >= PROGRESS_THROTTLE_MS || index === order[order.length - 1]) {
         lastEmit = t;
         this.events.onProgress?.(progressFor(this.sentBytes, meta.fileSize, this.sendStartedAt));
       }
     }
+    this.haveHints.delete(meta.transferId);
     this.dc!.send(encodeControl({ t: "done", transferId: meta.transferId }));
     this.events.onProgress?.(progressFor(meta.fileSize, meta.fileSize, this.sendStartedAt));
     this.events.onTransfer?.("complete");
+  }
+
+  /** Wait for a `have` hint, but never longer than resumeWaitMs. */
+  private awaitHaveHint(transferId: string): Promise<void> {
+    if (this.haveHints.has(transferId)) return Promise.resolve();
+    const budget = this.opts.resumeWaitMs;
+    if (!budget || budget <= 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.haveWaiters.delete(transferId);
+        resolve();
+      }, budget);
+      this.haveWaiters.set(transferId, () => {
+        clearTimeout(timer as unknown as number);
+        resolve();
+      });
+    });
   }
 
   cancel(reason = "cancelled"): void {
@@ -282,6 +451,7 @@ export class TransferPeer {
   }
 
   close(): void {
+    this.clearConnectionTimeout();
     try {
       this.dc?.close();
     } catch {
@@ -289,6 +459,15 @@ export class TransferPeer {
     }
     this.pc.close();
   }
+}
+
+/** Byte length covered by an ordered index list under this manifest. */
+function orderByteLength(meta: TransferMetadata, order: number[]): number {
+  let n = 0;
+  for (const i of order) {
+    n += Math.min(meta.chunkSize, meta.fileSize - i * meta.chunkSize);
+  }
+  return n;
 }
 
 /** Receiver helper: turn verified bytes into a downloadable object URL. */

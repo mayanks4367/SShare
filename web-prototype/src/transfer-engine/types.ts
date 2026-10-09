@@ -52,4 +52,5 @@ export type ControlMessage =
   | { t: "meta"; meta: TransferMetadata }
   | { t: "done"; transferId: string }
   | { t: "cancel"; transferId: string; reason?: string }
-  | { t: "error"; transferId: string; message: string };
+  | { t: "error"; transferId: string; message: string }
+  | { t: "have"; transferId: string; have: number[] };

@@ -11,7 +11,18 @@ speaks this over WebSocket interoperates. The canonical rules live in
 - Max frame: **128 KiB**. Larger frames get `PAYLOAD_TOO_LARGE`.
 - Server heartbeat: `ping` every 30 s; dead sockets are dropped and their
   peers receive `PEER_LEFT { reason: "timeout" }`.
-- Health: `GET /healthz` → `{ ok, rooms, peers, uptimeSec }`.
+- Health: `GET /healthz` → `{ ok, rooms, peers, turn: { urls, ttlSec } | null, uptimeSec }`.
+
+## TURN credentials (short-lived, no secrets in clients)
+
+- `POST /api/turn-creds` (body `{}` ignored, 4 KiB cap) →
+  `200 { ok: true, urls, username, password, ttl }` or
+  `503 { ok: false, … }` when the server has no `TURN_SECRET`/`TURN_URLS`.
+- Username `<expiry-unix>:<random>`, password `base64(HMAC-SHA1(secret,
+  username))` — coturn `use-auth-secret` compatible. TTL default 3600 s
+  (clamped 300–86400). Per-IP rate limit 20/min → `429`.
+- Clients fetch this at session start (best-effort, 5 s timeout) and fall
+  back to STUN-only when unavailable. See `WEBRTC_PRODUCTION.md`.
 
 ## Rooms (private, short-lived)
 

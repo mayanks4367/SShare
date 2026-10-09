@@ -15,6 +15,7 @@ import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { LIMITS, validateClientMessage, type ClientMessage, type ServerMessage } from "./protocol.js";
 import { RoomManager, RoomError, newClientId } from "./rooms.js";
 import { RateLimiter, CreateRoomLimiter } from "./rateLimiter.js";
+import { TurnIpLimiter, mintTurnCredentials, resolveTurnSettings } from "./turn.js";
 
 export interface SignalingOptions {
   port?: number;
@@ -26,6 +27,12 @@ export interface SignalingOptions {
   defaultMaxPeers?: number;
   /** Heartbeat interval in ms. */
   heartbeatMs?: number;
+  /** coturn shared secret (or TURN_SECRET env). Empty disables /api/turn-creds. */
+  turnSecret?: string;
+  /** TURN urls to hand out (or TURN_URLS env, comma-separated). */
+  turnUrls?: string[];
+  /** Credential lifetime in seconds (or TURN_TTL_SEC env, default 3600). */
+  turnTtlSec?: number;
 }
 
 interface SocketState {
@@ -61,15 +68,76 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
 
   const rooms = new RoomManager();
   const sockets = new Map<WebSocket, SocketState>();
+  const turn = resolveTurnSettings({
+    turnSecret: opts.turnSecret,
+    turnUrls: opts.turnUrls,
+    turnTtlSec: opts.turnTtlSec,
+  });
+  const turnLimiter = new TurnIpLimiter();
 
   const httpServer = createServer((req, res) => {
-    if (req.url === "/healthz") {
-      const s = rooms.stats();
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, ...s, uptimeSec: Math.floor(process.uptime()) }));
+    const cors = { "access-control-allow-origin": "*" };
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        ...cors,
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "content-type",
+      });
+      res.end();
       return;
     }
-    res.writeHead(404, { "content-type": "application/json" });
+    if (req.url === "/healthz") {
+      const s = rooms.stats();
+      res.writeHead(200, { "content-type": "application/json", ...cors });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          ...s,
+          turn: turn.secret ? { urls: turn.urls, ttlSec: turn.ttlSec } : null,
+          uptimeSec: Math.floor(process.uptime()),
+        }),
+      );
+      return;
+    }
+    if (req.url === "/api/turn-creds" && req.method === "POST") {
+      const ip = (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
+      if (!turnLimiter.tryConsume(ip)) {
+        res.writeHead(429, { "content-type": "application/json", ...cors });
+        res.end(JSON.stringify({ ok: false, error: "rate limited, slow down" }));
+        return;
+      }
+      if (!turn.secret || turn.urls.length === 0) {
+        res.writeHead(503, { "content-type": "application/json", ...cors });
+        res.end(JSON.stringify({ ok: false, error: "TURN not configured on this server" }));
+        return;
+      }
+      // Drain the (ignored) body with a small cap so clients can send {}.
+      let bytes = 0;
+      req.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > 4096) req.destroy();
+      });
+      req.on("end", () => {
+        try {
+          const creds = mintTurnCredentials(turn.secret, { urls: turn.urls, ttlSec: turn.ttlSec });
+          res.writeHead(200, { "content-type": "application/json", ...cors });
+          res.end(JSON.stringify({ ok: true, ...creds }));
+        } catch {
+          res.writeHead(500, { "content-type": "application/json", ...cors });
+          res.end(JSON.stringify({ ok: false, error: "could not mint credentials" }));
+        }
+      });
+      req.on("error", () => {
+        try {
+          res.writeHead(400, { "content-type": "application/json", ...cors });
+          res.end(JSON.stringify({ ok: false, error: "bad request" }));
+        } catch {
+          /* socket gone */
+        }
+      });
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json", ...cors });
     res.end(JSON.stringify({ ok: false, error: "not found" }));
   });
 

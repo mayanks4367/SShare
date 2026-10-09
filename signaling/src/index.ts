@@ -6,6 +6,7 @@
 export * from "./protocol.js";
 export * from "./rooms.js";
 export * from "./rateLimiter.js";
+export * from "./turn.js";
 export { createSignalingServer, type SignalingOptions, type SignalingServer } from "./server.js";
 export { SignalingClient, type SignalingEvents } from "./client.js";
 
