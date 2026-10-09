@@ -89,7 +89,14 @@ ROOM_EXPIRED | ROOM_FULL | NOT_IN_ROOM | RATE_LIMITED | PAYLOAD_TOO_LARGE`
 
 - Per socket token bucket: burst **30**, refill **5/s** across all types.
 - Room creation: **5/min** per socket (stricter window).
+- Per IP backstops: room creation **30/min**, room joins **120/min**,
+  TURN issuance **20/min** (one actor may open many sockets).
+- Live rooms capped at **10 000** (`maxRooms`); over cap → `RATE_LIMITED`.
 - Over limit → `ERROR { code: "RATE_LIMITED" }`, message dropped.
+- Optional `ALLOWED_ORIGINS` (env, comma-separated): when set, browser
+  `Origin`s not on the list are rejected at the WebSocket handshake (403);
+  requests without `Origin` (native clients) still pass. Unset = allow all
+  with a startup warning. See `SECURITY.md` for the threat model.
 
 ## Minimal flows
 

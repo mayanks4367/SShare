@@ -27,6 +27,18 @@ PORT=8787 npm start # or: node dist/index.js
 
 Health: `GET /healthz` → `{ ok, rooms, peers, uptimeSec }`.
 
+## Configuration (environment)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PORT` | listen port | `8787` |
+| `TURN_SECRET` | coturn `use-auth-secret` value; empty disables `POST /api/turn-creds` | unset (disabled) |
+| `TURN_URLS` | comma-separated TURN urls to hand out | unset |
+| `TURN_TTL_SEC` | credential lifetime (clamped 300–86400) | `3600` |
+| `ALLOWED_ORIGINS` | comma-separated allowed WS `Origin`s; unset = allow all + warning | unset |
+
+Security model and threat boundaries: [`../SECURITY.md`](../SECURITY.md).
+
 ## Layout
 
 ```

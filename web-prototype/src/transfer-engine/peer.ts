@@ -11,11 +11,13 @@
  */
 import {
   PROTOCOL_CHANNEL,
+  assertIncomingMetadata,
   computeRemaining,
   decodeChunk,
   decodeControl,
   encodeChunk,
   encodeControl,
+  MAX_CHUNK_FRAME_BYTES,
   sanitizeHave,
 } from "./protocol.js";
 import { reassembleByIndex } from "./chunker.js";
@@ -289,21 +291,29 @@ export class TransferPeer {
 
   private async handleControl(msg: ControlMessage): Promise<void> {
     if (msg.t === "meta" && this.role === "receiver") {
-      if (this.recvMeta && this.recvMeta.transferId === msg.meta.transferId && this.recvBytes > 0) {
+      let meta: TransferMetadata;
+      try {
+        meta = assertIncomingMetadata(msg.meta);
+      } catch (e) {
+        this.events.onTransfer?.("error");
+        this.events.onError?.(e instanceof Error ? e : new Error("rejected malicious manifest"));
+        return;
+      }
+      if (this.recvMeta && this.recvMeta.transferId === meta.transferId && this.recvBytes > 0) {
         const have: number[] = [];
         for (let i = 0; i < this.recvChunks.length; i++) {
           if (this.recvChunks[i]) have.push(i);
         }
-        this.dc?.send(encodeControl({ t: "have", transferId: msg.meta.transferId, have }));
+        this.dc?.send(encodeControl({ t: "have", transferId: meta.transferId, have }));
         this.events.onTransfer?.("receiving");
         this.emitProgressRecv(true);
         return;
       }
-      this.recvMeta = msg.meta;
-      this.recvChunks = new Array(msg.meta.totalChunks).fill(undefined);
+      this.recvMeta = meta;
+      this.recvChunks = new Array(meta.totalChunks).fill(undefined);
       this.recvBytes = 0;
       this.recvStartedAt = nowMs();
-      this.events.onMetadata?.(msg.meta);
+      this.events.onMetadata?.(meta);
       this.events.onTransfer?.("receiving");
       this.emitProgressRecv(true);
     } else if (msg.t === "have" && this.role === "sender") {
@@ -316,11 +326,16 @@ export class TransferPeer {
         wake();
       }
     } else if (msg.t === "done" && this.role === "receiver") {
+      if (!this.recvMeta || msg.transferId !== this.recvMeta.transferId) return;
       await this.finishReceive();
     } else if (msg.t === "cancel") {
+      const active = this.sendMeta?.transferId ?? this.recvMeta?.transferId ?? "";
+      if (!active || msg.transferId !== active) return;
       this.events.onTransfer?.("cancelled");
       this.events.onCancelled?.(msg.reason);
     } else if (msg.t === "error") {
+      const active = this.sendMeta?.transferId ?? this.recvMeta?.transferId ?? "";
+      if (!active || msg.transferId !== active) return;
       this.events.onTransfer?.("error");
       this.events.onError?.(new Error(msg.message));
     }
@@ -328,8 +343,15 @@ export class TransferPeer {
 
   private handleChunkFrame(buf: ArrayBuffer): void {
     if (this.role !== "receiver" || !this.recvMeta) return;
+    if (buf.byteLength > MAX_CHUNK_FRAME_BYTES) return;
     const { index, payload } = decodeChunk(buf);
     if (index >= this.recvMeta.totalChunks) return;
+    if (payload.length > this.recvMeta.chunkSize) return;
+    if (this.recvBytes + payload.length > this.recvMeta.fileSize) {
+      this.events.onTransfer?.("error");
+      this.events.onError?.(new Error("peer sent more bytes than the manifest declares"));
+      return;
+    }
     if (!this.recvChunks[index]) {
       this.recvChunks[index] = payload;
       this.recvBytes += payload.length;

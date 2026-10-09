@@ -14,8 +14,10 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { LIMITS, validateClientMessage, type ClientMessage, type ServerMessage } from "./protocol.js";
 import { RoomManager, RoomError, newClientId } from "./rooms.js";
-import { RateLimiter, CreateRoomLimiter } from "./rateLimiter.js";
+import { IpRateLimiter, RateLimiter, CreateRoomLimiter } from "./rateLimiter.js";
 import { TurnIpLimiter, mintTurnCredentials, resolveTurnSettings } from "./turn.js";
+
+export const DEFAULT_MAX_ROOMS = 10_000;
 
 export interface SignalingOptions {
   port?: number;
@@ -33,11 +35,34 @@ export interface SignalingOptions {
   turnUrls?: string[];
   /** Credential lifetime in seconds (or TURN_TTL_SEC env, default 3600). */
   turnTtlSec?: number;
+  /** Cap on live rooms (memory DoS bound, default 10 000). */
+  maxRooms?: number;
+  /** Per-IP room creations per minute (default 30). */
+  ipCreatePerMin?: number;
+  /** Per-IP room joins per minute (default 120). */
+  ipJoinPerMin?: number;
+  /**
+   * Allowed WebSocket Origin values (or ALLOWED_ORIGINS env, comma-separated).
+   * Empty = allow all (default; browsers can otherwise drive the API from any
+   * site). When set, browser origins not on the list are rejected with 403;
+   * requests without an Origin header (native clients, curl) still pass.
+   */
+  allowedOrigins?: string[];
+}
+
+function clientIp(req: { socket: { remoteAddress?: string } }): string {
+  return (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
+}
+
+function resolveOrigins(explicit?: string[]): string[] {
+  if (explicit) return explicit;
+  return (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 interface SocketState {
   ws: WebSocket;
   clientId: string;
+  ip: string;
   limiter: RateLimiter;
   createLimiter: CreateRoomLimiter;
   alive: boolean;
@@ -68,6 +93,15 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
 
   const rooms = new RoomManager();
   const sockets = new Map<WebSocket, SocketState>();
+  const maxRooms = opts.maxRooms ?? DEFAULT_MAX_ROOMS;
+  const allowedOrigins = resolveOrigins(opts.allowedOrigins);
+  if (allowedOrigins.length === 0) {
+    console.warn("[signaling] ALLOWED_ORIGINS unset: accepting WebSocket clients from any site origin");
+  }
+  // Per-IP backstops (one actor may open many sockets; per-socket limits
+  // alone would not stop room-spam or room-id enumeration floods).
+  const ipCreateLimiter = new IpRateLimiter(opts.ipCreatePerMin ?? 30);
+  const ipJoinLimiter = new IpRateLimiter(opts.ipJoinPerMin ?? 120);
   const turn = resolveTurnSettings({
     turnSecret: opts.turnSecret,
     turnUrls: opts.turnUrls,
@@ -100,7 +134,7 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
       return;
     }
     if (req.url === "/api/turn-creds" && req.method === "POST") {
-      const ip = (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
+      const ip = clientIp(req);
       if (!turnLimiter.tryConsume(ip)) {
         res.writeHead(429, { "content-type": "application/json", ...cors });
         res.end(JSON.stringify({ ok: false, error: "rate limited, slow down" }));
@@ -141,12 +175,27 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
     res.end(JSON.stringify({ ok: false, error: "not found" }));
   });
 
-  const wss = new WebSocketServer({ server: httpServer, maxPayload: LIMITS.MAX_MESSAGE_BYTES });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: LIMITS.MAX_MESSAGE_BYTES,
+    verifyClient: ({ origin, req }, done) => {
+      if (allowedOrigins.length === 0 || !origin) {
+        done(true);
+        return;
+      }
+      if (allowedOrigins.includes(origin)) {
+        done(true);
+        return;
+      }
+      done(false, 403, "origin not allowed");
+    },
+  });
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, req) => {
     const state: SocketState = {
       ws,
       clientId: newClientId(),
+      ip: clientIp(req),
       limiter: new RateLimiter({ capacity: 30, refillPerSec: 5 }),
       createLimiter: new CreateRoomLimiter(),
       alive: true,
@@ -193,8 +242,16 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
           sendError(ws, "RATE_LIMITED", "too many rooms created; slow down", msg.requestId);
           return;
         }
+        if (!ipCreateLimiter.tryConsume(state.ip)) {
+          sendError(ws, "RATE_LIMITED", "too many rooms created from this address; slow down", msg.requestId);
+          return;
+        }
         if (!state.limiter.tryConsume()) {
           sendError(ws, "RATE_LIMITED", "slow down", msg.requestId);
+          return;
+        }
+        if (rooms.size >= maxRooms) {
+          sendError(ws, "RATE_LIMITED", "server is at room capacity; try again later", msg.requestId);
           return;
         }
         // Client-supplied ttlSec is clamped to the protocol range;
@@ -262,6 +319,10 @@ export async function createSignalingServer(opts: SignalingOptions = {}): Promis
     const ws = state.ws;
     switch (msg.type) {
       case "JOIN_ROOM": {
+        if (!ipJoinLimiter.tryConsume(state.ip)) {
+          sendError(ws, "RATE_LIMITED", "too many join attempts from this address; slow down", msg.requestId);
+          return;
+        }
         // Leave previous room (if any) before joining the new one.
         if (state.roomId && state.roomId !== msg.room) {
           const prev = rooms.leaveRoom(state.clientId);

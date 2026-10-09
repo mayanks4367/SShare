@@ -58,3 +58,30 @@ export class CreateRoomLimiter {
     return true;
   }
 }
+
+/**
+ * Sliding-window limiter keyed by IP (for endpoints/operations where one
+ * actor can open many sockets). Entries for idle IPs are pruned lazily.
+ */
+export class IpRateLimiter {
+  private readonly hits = new Map<string, number[]>();
+  constructor(
+    private readonly maxPerWindow: number,
+    private readonly windowMs: number = 60_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  tryConsume(ip: string): boolean {
+    const t = this.now();
+    const arr = (this.hits.get(ip) ?? []).filter((s) => s > t - this.windowMs);
+    if (arr.length >= this.maxPerWindow) {
+      this.hits.set(ip, arr);
+      return false;
+    }
+    arr.push(t);
+    // Bound memory: drop the key set when it grows absurd (DDoS hygiene).
+    if (this.hits.size > 100_000) this.hits.clear();
+    this.hits.set(ip, arr);
+    return true;
+  }
+}

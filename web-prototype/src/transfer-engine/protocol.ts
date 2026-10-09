@@ -73,7 +73,9 @@ export function buildMetadata(args: {
 
 export function validateMetadata(m: TransferMetadata): void {
   if (!m.transferId || !m.fileName) throw new Error("bad metadata: id/name");
+  if (m.fileName.length > MAX_FILENAME_LEN) throw new Error("bad metadata: fileName too long");
   if (m.fileSize < 0) throw new Error("bad metadata: fileSize");
+  if (m.fileSize > MAX_FILE_SIZE) throw new Error("bad metadata: fileSize too large");
   if (m.chunkSize < 1 || m.chunkSize > 1024 * 1024) {
     throw new Error("bad metadata: chunkSize");
   }
@@ -82,8 +84,52 @@ export function validateMetadata(m: TransferMetadata): void {
       `bad metadata: totalChunks ${m.totalChunks} inconsistent with size ${m.fileSize}/${m.chunkSize}`,
     );
   }
+  if (m.totalChunks > MAX_TOTAL_CHUNKS) throw new Error("bad metadata: too many chunks");
   if (!isHexSha256(m.checksum)) throw new Error("bad metadata: checksum");
 }
+
+/**
+ * Validate an UNTRUSTED inbound manifest before the receiver allocates
+ * anything. Throws on any violation.
+ */
+export function assertIncomingMetadata(v: unknown): TransferMetadata {
+  if (typeof v !== "object" || v === null) throw new Error("bad metadata: not an object");
+  const m = v as Record<string, unknown>;
+  const str = (k: string): string => {
+    const x = m[k];
+    if (typeof x !== "string") throw new Error(`bad metadata: ${k} must be a string`);
+    return x;
+  };
+  const num = (k: string): number => {
+    const x = m[k];
+    if (typeof x !== "number" || !Number.isFinite(x)) throw new Error(`bad metadata: ${k} must be a number`);
+    return x;
+  };
+  const meta: TransferMetadata = {
+    transferId: str("transferId"),
+    fileName: str("fileName"),
+    fileSize: num("fileSize"),
+    mimeType: typeof m["mimeType"] === "string" ? (m["mimeType"] as string) : "application/octet-stream",
+    chunkSize: num("chunkSize"),
+    totalChunks: num("totalChunks"),
+    checksum: str("checksum"),
+    createdAt: typeof m["createdAt"] === "number" ? (m["createdAt"] as number) : 0,
+  };
+  if (!Number.isInteger(meta.fileSize) || !Number.isInteger(meta.chunkSize) || !Number.isInteger(meta.totalChunks)) {
+    throw new Error("bad metadata: sizes must be integers");
+  }
+  validateMetadata(meta);
+  return meta;
+}
+
+/** Largest single file accepted from a remote peer. */
+export const MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024;
+/** Largest chunk count accepted (bounds the receiver's chunk table). */
+export const MAX_TOTAL_CHUNKS = 1_000_000;
+/** Longest file name accepted. */
+export const MAX_FILENAME_LEN = 255;
+/** Largest single DataChannel chunk frame accepted (header + payload). */
+export const MAX_CHUNK_FRAME_BYTES = 2 * 1024 * 1024;
 
 const ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 

@@ -132,6 +132,13 @@ cargo test -p swarmshare-core          # 7 unit tests (chunk/parity/crypto/picke
 - QUIC-only fast path + uTP-style congestion control
 - WebTransport gateway so browsers join the swarm directly
 
+## 🔒 Security
+
+Threat model, trust boundaries and deployment checklist: [`SECURITY.md`](SECURITY.md).
+Web specifics: [`WEB_INTEGRATION.md`](WEB_INTEGRATION.md) (boundaries),
+[`WEBRTC_PRODUCTION.md`](WEBRTC_PRODUCTION.md) (NAT/TURN/limits),
+[`signaling/PROTOCOL.md`](signaling/PROTOCOL.md) (wire rules).
+
 ## 📚 References
 
 - rust-libp2p `file-sharing` + `ipfs-kad` examples (protocol patterns)

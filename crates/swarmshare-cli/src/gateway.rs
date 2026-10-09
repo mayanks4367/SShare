@@ -89,8 +89,7 @@ async fn cors_middleware(
     resp
 }
 
-fn cors_headers(mut h: HeaderMap) -> HeaderMap {
-    h.insert("access-control-allow-origin", "*".parse().unwrap());
+fn cors_headers(mut h: HeaderMap) -> HeaderMap {    h.insert("access-control-allow-origin", "*".parse().unwrap());
     h.insert(
         "access-control-allow-methods",
         "GET, POST, OPTIONS".parse().unwrap(),
@@ -101,6 +100,32 @@ fn cors_headers(mut h: HeaderMap) -> HeaderMap {
     );
     h.insert("access-control-max-age", "86400".parse().unwrap());
     h
+}
+
+/// User-supplied ids flow into filesystem paths (`manifests/<id>.json`).
+/// Real ids are 64-char hex; accept a tight superset and reject anything
+/// that could traverse (`/`, `.`, decoded separators, empty, overlong).
+pub fn valid_file_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Make a stored file name safe for the `Content-Disposition` header:
+/// strip quotes, backslashes and control characters (header-injection
+/// defense). Falls back to "download" when nothing printable remains.
+pub fn attachment_filename(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        "download".to_string()
+    } else {
+        clean
+    }
 }
 
 async fn index(State(s): State<GatewayState>) -> Html<String> {
@@ -169,6 +194,12 @@ async fn get_manifest(
     State(s): State<GatewayState>,
     Path(file_id): Path<String>,
 ) -> impl IntoResponse {
+    if !valid_file_id(&file_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid file id"})),
+        );
+    }
     let store = BlockStore::new(&s.store_root).unwrap();
     match store.get_manifest(&file_id) {
         Ok(m) => (StatusCode::OK, Json(serde_json::to_value(&m).unwrap())),
@@ -209,6 +240,12 @@ async fn api_web_manifest(
     State(s): State<GatewayState>,
     Path(file_id): Path<String>,
 ) -> impl IntoResponse {
+    if !valid_file_id(&file_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid file id"})),
+        );
+    }
     let store = match BlockStore::new(&s.store_root) {
         Ok(x) => x,
         Err(e) => {
@@ -265,6 +302,10 @@ async fn api_chunk(
     State(s): State<GatewayState>,
     Path((file_id, index)): Path<(String, usize)>,
 ) -> impl IntoResponse {
+    if !valid_file_id(&file_id) {
+        return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::from("invalid file id"))
+            .into_response();
+    }
     let store = match BlockStore::new(&s.store_root) {
         Ok(x) => x,
         Err(e) => {
@@ -340,10 +381,16 @@ async fn upload_file(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> impl IntoResponse {
-    if q.name.trim().is_empty() || q.name.contains('/') || q.name.contains('\\') {
+    if q.name.trim().is_empty()
+        || q.name.contains('/')
+        || q.name.contains('\\')
+        || q.name.contains('"')
+        || q.name.chars().any(|c| c.is_control())
+        || q.name.len() > 255
+    {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "query param 'name' is required (plain file name)"})),
+            Json(serde_json::json!({"error": "query param 'name' is required (plain file name, <=255 chars, no quotes/controls/separators)"})),
         );
     }
     if body.len() > MAX_UPLOAD_BYTES {
@@ -394,6 +441,12 @@ async fn download_file(
     State(s): State<GatewayState>,
     Path(file_id): Path<String>,
 ) -> impl IntoResponse {
+    if !valid_file_id(&file_id) {
+        return axum::response::Response::builder()
+            .status(400)
+            .body(axum::body::Body::from("invalid file id"))
+            .unwrap();
+    }
     let store = BlockStore::new(&s.store_root).unwrap();
     let manifest: FileManifest = match store.get_manifest(&file_id) {
         Ok(m) => m,
@@ -450,7 +503,7 @@ async fn download_file(
         .header("Content-Type", "application/octet-stream")
         .header(
             "Content-Disposition",
-            format!("attachment; filename=\"{}\"", manifest.file_name),
+            format!("attachment; filename=\"{}\"", attachment_filename(&manifest.file_name)),
         )
         .body(axum::body::Body::from(out))
         .unwrap()
@@ -660,5 +713,68 @@ mod tests {
         let file_id = up.json()["manifest"]["file_id"].as_str().expect("id").to_string();
         let oob = http_raw(addr, "GET", &format!("/api/chunks/{}/9", file_id), &[], None).await;
         assert_eq!(oob.status, 404);
+    }
+
+    #[test]
+    fn file_id_guard_rejects_traversal() {
+        assert!(valid_file_id("dd277604be0d182c38cf0298e2bd410a0ed0803dbe68566e7d2c78186cf22ef0"));
+        assert!(valid_file_id("SS-ABC123"));
+        assert!(!valid_file_id(""));
+        assert!(!valid_file_id(".."));
+        assert!(!valid_file_id("../secret"));
+        assert!(!valid_file_id("a/b"));
+        assert!(!valid_file_id("a.json"));
+        assert!(!valid_file_id(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn attachment_filename_strips_header_breaks() {
+        assert_eq!(attachment_filename("photo.png"), "photo.png");
+        assert_eq!(attachment_filename("a\"b"), "ab");
+        assert_eq!(attachment_filename("a\nb\rc"), "abc");
+        assert_eq!(attachment_filename("a\\b"), "ab");
+        assert_eq!(attachment_filename("\"\""), "download");
+        assert_eq!(attachment_filename("  spaced name.pdf  "), "spaced name.pdf");
+    }
+
+    #[tokio::test]
+    async fn traversal_ids_are_rejected_before_filesystem() {
+        let (addr, _dir) = spawn_gateway().await;
+        // ".." is a single path segment: without the guard it would hit manifests/...json.
+        for path in ["/manifest/..", "/api/web-manifest/..", "/file/..", "/api/chunks/abc%2e%2e/0"] {
+            let r = http_raw(addr, "GET", path, &[], None).await;
+            assert!(
+                r.status == 400 || r.status == 404,
+                "{} -> {} (traversal must never succeed)",
+                path,
+                r.status
+            );
+            assert_ne!(r.status, 200, "{} must not succeed", path);
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_quote_and_control_names() {
+        let (addr, _dir) = spawn_gateway().await;
+        // Query-encoding of a"b — would break the Content-Disposition header.
+        let r = http_raw(
+            addr,
+            "POST",
+            "/api/files/upload?name=a%22b.bin",
+            &[("content-type", "application/octet-stream")],
+            Some(b"x"),
+        )
+        .await;
+        assert_eq!(r.status, 400);
+        // Overlong name.
+        let r2 = http_raw(
+            addr,
+            "POST",
+            &format!("/api/files/upload?name={}.bin", "a".repeat(300)),
+            &[("content-type", "application/octet-stream")],
+            Some(b"x"),
+        )
+        .await;
+        assert_eq!(r2.status, 400);
     }
 }

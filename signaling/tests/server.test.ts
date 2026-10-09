@@ -16,8 +16,11 @@ interface TestClient {
   clientId: string | null;
 }
 
-async function openClient(port: number): Promise<TestClient> {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+async function openClient(port: number, origin?: string): Promise<TestClient> {
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}/ws`,
+    origin ? { origin } : undefined,
+  );
   const c: TestClient = { ws, inbox: [], clientId: null };
   // Attach BEFORE open: the server sends WELCOME immediately on connect.
   ws.on("message", (raw) => {
@@ -261,5 +264,73 @@ describe("signaling server", () => {
     const err = await waitFor(a, (m) => m.type === "ERROR");
     expect(err.code).toBe("NOT_IN_ROOM");
     a.ws.close();
+  });
+
+  it("caps live rooms (memory DoS bound)", async () => {
+    const s = await createSignalingServer({ port: 0, sweepMs: 50, maxRooms: 2 });
+    servers.push(s);
+    const a = await openClient(s.port);
+    for (let i = 0; i < 2; i++) {
+      send(a, { type: "CREATE_ROOM", requestId: `c${i}` });
+      const created = await waitFor(a, (m) => m.type === "ROOM_CREATED" && m.requestId === `c${i}`);
+      expect(created.room).toMatch(/^SS-/);
+    }
+    send(a, { type: "CREATE_ROOM", requestId: "full" });
+    const err = await waitFor(a, (m) => m.type === "ERROR" && m.requestId === "full");
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(String(err.message)).toMatch(/capacity/);
+    a.ws.close();
+  });
+
+  it("throttles join floods per IP (room-enumeration backstop)", async () => {
+    const s = await createSignalingServer({ port: 0, sweepMs: 50, ipJoinPerMin: 5 });
+    servers.push(s);
+    const a = await openClient(s.port);
+    for (let i = 0; i < 8; i++) {
+      send(a, { type: "JOIN_ROOM", room: "SS-DOESNOTEXIST01", role: "sender" });
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    const limited = a.inbox.filter((m) => m.type === "ERROR" && m.code === "RATE_LIMITED");
+    expect(limited.length).toBeGreaterThan(0);
+    a.ws.close();
+  });
+
+  it("enforces the origin allowlist when configured", async () => {
+    const s = await createSignalingServer({
+      port: 0,
+      sweepMs: 50,
+      allowedOrigins: ["https://app.example.com"],
+    });
+    servers.push(s);
+    // Listed browser origin: welcome.
+    const good = await openClient(s.port, "https://app.example.com");
+    expect(good.clientId).toBeTruthy();
+    good.ws.close();
+    // Foreign site origin: rejected before any frame.
+    await expect(
+      (async () => {
+        const ws = new WebSocket(`ws://127.0.0.1:${s.port}/ws`, { origin: "https://evil.test" });
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error("no rejection — handshake hung?")), 3000);
+          ws.on("open", () => {
+            clearTimeout(t);
+            reject(new Error("evil origin was allowed"));
+          });
+          ws.on("error", () => {
+            clearTimeout(t);
+            resolve();
+          });
+          ws.on("unexpected-response", () => {
+            clearTimeout(t);
+            resolve();
+          });
+        });
+        ws.close();
+      })(),
+    ).resolves.toBeUndefined();
+    // Non-browser client (no Origin header): still allowed.
+    const plain = await openClient(s.port);
+    expect(plain.clientId).toBeTruthy();
+    plain.ws.close();
   });
 });
