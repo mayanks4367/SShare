@@ -401,7 +401,7 @@ export function SwarmSharePage() {
                       {notice}
                     </p>
                   ) : null}
-                  <TransferProgress progress={progress} />
+                  <TransferProgress progress={progress} role={role} />
                   <div className="mt-3 flex flex-wrap gap-2">
                     {state === "transferring" && !paused && source !== "gateway" && (
                       <Button
@@ -459,7 +459,7 @@ export function SwarmSharePage() {
                 </div>
               )}
             </div>
-            {!busy && state !== "completed" && <TransferProgress progress={null} />}
+            {!busy && state !== "completed" && <TransferProgress progress={null} role={role} />}
           </section>
 
           <section

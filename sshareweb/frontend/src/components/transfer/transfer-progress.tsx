@@ -2,16 +2,25 @@ import { formatBytes, formatEta, formatPercent, formatSpeed } from "@/lib/format
 import type { ActiveFileProgress } from "@/hooks/use-transfer";
 
 /**
- * TransferProgress — live bar + Speed/ETA/Sent metrics in the page's
- * Metric visual language.
+ * TransferProgress — live bar + Speed/ETA/Transferred metrics in the page's
+ * Metric visual language. Shows "Received" or "Sent" depending on peer role.
  */
-export function TransferProgress({ progress }: { progress: ActiveFileProgress | null }) {
+export function TransferProgress({
+  progress,
+  role,
+}: {
+  progress: ActiveFileProgress | null;
+  role?: "sender" | "receiver" | null;
+}) {
+  const transferredLabel =
+    role === "receiver" ? "Received" : role === "sender" ? "Sent" : "Transferred";
+
   if (!progress) {
     return (
       <div className="mt-4 grid grid-cols-3 gap-2 border-t border-border/70 pt-3">
         <Metric label="Speed" value="—" />
         <Metric label="ETA" value="—" />
-        <Metric label="Sent" value="—" />
+        <Metric label={transferredLabel} value="—" />
       </div>
     );
   }
@@ -38,7 +47,7 @@ export function TransferProgress({ progress }: { progress: ActiveFileProgress | 
       <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/70 pt-3">
         <Metric label="Speed" value={formatSpeed(progress.speedBps)} />
         <Metric label="ETA" value={formatEta(progress.etaSec)} />
-        <Metric label="Sent" value={formatBytes(progress.bytesTransferred)} />
+        <Metric label={transferredLabel} value={formatBytes(progress.bytesTransferred)} />
       </div>
     </div>
   );

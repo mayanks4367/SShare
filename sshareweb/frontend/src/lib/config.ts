@@ -6,6 +6,10 @@
 export function signalingUrl(): string {
   const fromEnv = import.meta.env["VITE_SIGNALING_URL"] as string | undefined;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  if (typeof window !== "undefined" && window.location?.hostname) {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.hostname}:8787/ws`;
+  }
   return "ws://localhost:8787/ws";
 }
 

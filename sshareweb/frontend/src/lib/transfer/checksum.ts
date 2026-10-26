@@ -8,9 +8,10 @@ function subtle(): SubtleCrypto {
   throw new Error("WebCrypto subtle not available in this environment");
 }
 
-export async function sha256Hex(data: Uint8Array): Promise<string> {
-  // Copy into a plain ArrayBuffer (subtle rejects SharedArrayBuffer views).
-  const buf = new Uint8Array(data).buffer as ArrayBuffer;
+export async function sha256Hex(data: Uint8Array | ArrayBuffer): Promise<string> {
+  // Avoid copying if data is already a plain ArrayBuffer; subtle rejects SharedArrayBuffer views.
+  const buf: ArrayBuffer =
+    data instanceof ArrayBuffer ? data : (new Uint8Array(data).buffer as ArrayBuffer);
   const digest = await subtle().digest("SHA-256", buf);
   return toHex(new Uint8Array(digest));
 }

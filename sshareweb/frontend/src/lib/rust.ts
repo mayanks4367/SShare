@@ -33,6 +33,10 @@ export interface GatewayHealth {
 export function gatewayBase(): string {
   const fromEnv = import.meta.env["VITE_SSHARE_API_URL"] as string | undefined;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim().replace(/\/+$/, "");
+  if (typeof window !== "undefined" && window.location?.hostname) {
+    const proto = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${proto}//${window.location.hostname}:8080`;
+  }
   return "http://localhost:8080";
 }
 

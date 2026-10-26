@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { ArrowDownToLine, ArrowRight, CircleAlert, CloudOff, Files, X } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, Check, CircleAlert, CloudOff, Files, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TransferProgress } from "@/components/transfer/transfer-progress";
 import { ReceivedFiles } from "@/components/transfer/received-files";
@@ -134,12 +134,18 @@ export function JoinByLink({ rawCode }: { rawCode: string }) {
   if (phase === "completed") {
     return (
       <JoinShell title="Transfer complete">
-        <div role="status" className="transfer-enter">
-          <p className="text-sm font-semibold">
+        <div role="status" className="transfer-enter text-center">
+          <span className="mx-auto grid size-12 place-items-center rounded-2xl border border-swarm/20 bg-swarm/10 text-swarm">
+            <Check aria-hidden="true" className="size-6" />
+          </span>
+          <p className="mt-4 text-sm font-semibold">Transfer complete</p>
+          <p className="mt-1 text-xs text-muted-foreground">
             {received.length} {received.length === 1 ? "file" : "files"} received · checksums
             verified
           </p>
-          <ReceivedFiles files={received} />
+          <div className="mt-4 text-left">
+            <ReceivedFiles files={received} />
+          </div>
           <HomeButton />
         </div>
       </JoinShell>
@@ -167,7 +173,7 @@ export function JoinByLink({ rawCode }: { rawCode: string }) {
             {notice}
           </p>
         ) : null}
-        <TransferProgress progress={progress} />
+        <TransferProgress progress={progress} role="receiver" />
         {busy && (
           <div className="mt-3 flex flex-wrap gap-2">
             <Button

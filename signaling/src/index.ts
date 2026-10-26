@@ -12,8 +12,14 @@ export { SignalingClient, type SignalingEvents } from "./client.js";
 
 import { createSignalingServer } from "./server.js";
 
-// Run as a service: `node dist/index.js` (PORT env, default 8787).
-const isMain = process.argv[1]?.endsWith("/index.js") || process.argv[1]?.endsWith("\\index.js");
+// Run as a service: `node dist/index.js` or `tsx src/index.ts` (PORT / HOST env, default 8787).
+const argv1 = process.argv[1] ?? "";
+const isMain =
+  argv1.endsWith("/index.js") ||
+  argv1.endsWith("\\index.js") ||
+  argv1.endsWith("/index.ts") ||
+  argv1.endsWith("\\index.ts");
+
 if (isMain) {
   const port = Number(process.env.PORT ?? 8787);
   createSignalingServer({ port })

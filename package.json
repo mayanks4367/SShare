@@ -1,0 +1,12 @@
+{
+  "name": "sshare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SwarmShare P2P File Sharing",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "dev": "node scripts/start.js",
+    "test": "node --test scripts/start.test.js && npm --prefix signaling test && npm --prefix sshareweb/frontend test"
+  }
+}

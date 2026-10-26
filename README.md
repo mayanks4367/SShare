@@ -1,21 +1,36 @@
 # 🌀 SwarmShare — Decentralized P2P File Sharing Network
 
-**Tech:** Rust · libp2p · Kademlia DHT · Gossipsub · TCP + QUIC (UDP) · BLAKE3
-**Type:** BitTorrent-like file distribution, tracker-free, content-addressed.
+**Tech:** Rust · libp2p · Kademlia DHT · Gossipsub · WebRTC · React 19 · Vite · BLAKE3
+**Type:** BitTorrent-like file distribution, tracker-free, content-addressed, with instant WebRTC device-to-device transfers.
 
-Peers find each other over a Kademlia DHT + Gossipsub + mDNS, then download
-**256 KiB file chunks in parallel** with rarest-first selection, per-peer
-reputation, and tit-for-tat fairness.
+Peers find each other over a Kademlia DHT + Gossipsub + mDNS (CLI) or WebRTC DataChannels + WebSocket signaling (Browser/Mobile), then transfer **file chunks in parallel** with rarest-first selection, per-peer reputation, and integrity verification.
 
 ```
 ┌──────────┐  DHT provide/get   ┌──────────┐
 │  Peer A  │◄──────────────────►│  Peer B  │
 │ (seeder) │  Gossipsub announce│ (leecher)│
 └────┬─────┘  mDNS (LAN)        └────┬─────┘
-     │ ┌──────────────────────────┐  │
-     └──►  chunk 0,2,4… (parallel)◄──┘
+     │ ┌───────────────────────────┐ │
+     └─►  chunk 0,2,4… (parallel)◄───┘
           verify BLAKE3 → assemble
 ```
+
+## 📱 WebRTC Quick Start (Laptop ↔ Phone Direct Transfer)
+
+Start the signaling service and web application with a single command:
+
+```bash
+./start.sh
+# or: npm start
+```
+
+This automatically:
+1. **Detects your laptop's Wi-Fi / LAN IP address**.
+2. **Generates a QR code in the terminal** so you can simply point your phone's camera at the screen.
+3. Serves the web interface to both laptop (`http://localhost:5173`) and phone (`http://<lan-ip>:5173`).
+4. Select files on the laptop, scan the transfer QR code or tap **Approve & join** on the phone, and transfer files directly over WebRTC without manual code typing or intermediate cloud uploads.
+
+---
 
 ## ✨ What's beyond basic BitTorrent?
 
@@ -36,7 +51,7 @@ reputation, and tit-for-tat fairness.
 | 13 | **TCP + QUIC transports, Noise encryption, Yamux** | Raw-socket performance + encrypted channels + NAT-friendly UDP |
 | 14 | **Offline `demo`** | Full viva demo without any network |
 
-## 🚀 Quick start (2 minutes)
+## 🚀 CLI Quick start (2 minutes)
 
 ```bash
 cargo build -p swarmshare
@@ -112,13 +127,18 @@ Cargo.toml                    # workspace
 crates/swarmshare-core/       # chunk, manifest, store, picker, parity, crypto
 crates/swarmshare-net/        # libp2p behaviour (kad+gossipsub+mdns+identify+rpc)
 crates/swarmshare-cli/        # CLI + gateway + parallel downloader
+signaling/                    # WebRTC WebSocket signaling server (:8787)
+sshareweb/frontend/           # React 19 + TanStack web UI (:5173)
+scripts/start.js              # One-command unified launcher with LAN auto-detection
 scripts/local-2peer.sh        # automated 2-peer test
+start.sh                      # One-command entrypoint
 ```
 
 ## 🧪 Tests
 
 ```bash
-cargo test -p swarmshare-core          # 7 unit tests (chunk/parity/crypto/picker)
+npm test                               # All JS/TS tests (launcher, signaling, web frontend)
+cargo test -p swarmshare-core          # 11 unit tests (chunk/parity/crypto/picker)
 ./target/debug/swarmshare demo --mb 1  # offline end-to-end sim
 ./scripts/local-2peer.sh               # live localhost transfer + integrity diff
 ```
